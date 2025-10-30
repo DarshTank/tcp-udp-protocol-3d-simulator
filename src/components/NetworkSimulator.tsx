@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Network, Activity, Send, WifiOff, CheckCircle2, XCircle } from "lucide-react";
+import { Network, Activity, Send, WifiOff, CheckCircle2, XCircle, FileText, Upload } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
 
 // Types
 type Protocol = "TCP" | "UDP";
 type ConnectionState = "CLOSED" | "SYN_SENT" | "SYN_RECEIVED" | "ESTABLISHED" | "FIN_WAIT" | "CLOSING";
-type PacketType = "SYN" | "SYN-ACK" | "ACK" | "DATA" | "FIN" | "UDP-DATA";
+type PacketType = "SYN" | "SYN-ACK" | "ACK" | "DATA" | "FIN" | "UDP-DATA" | "FILE-CHUNK";
 
 interface Packet {
   id: string;
@@ -20,6 +21,8 @@ interface Packet {
   progress: number;
   color: string;
   toServer: boolean;
+  fileChunkIndex?: number;
+  fileName?: string;
 }
 
 interface Stats {
@@ -29,21 +32,51 @@ interface Stats {
   totalTime: number;
 }
 
+interface FileTransfer {
+  name: string;
+  size: number;
+  chunks: number;
+  currentChunk: number;
+  progress: number;
+  status: "idle" | "transferring" | "completed" | "failed";
+}
+
 // Animated Packet Component - simplified without Text labels
 function AnimatedPacket({ packet }: { packet: Packet }) {
   const startX = packet.toServer ? -5 : 5;
   const endX = packet.toServer ? 5 : -5;
   const x = startX + (endX - startX) * packet.progress;
 
+  // File chunks are larger and have a document icon appearance
+  const isFileChunk = packet.type === "FILE-CHUNK";
+  const size = isFileChunk ? 0.5 : 0.3;
+
   return (
-    <mesh position={[x, 0, 0]} castShadow>
-      <boxGeometry args={[0.3, 0.3, 0.3]} />
-      <meshStandardMaterial 
-        color={packet.color} 
-        emissive={packet.color} 
-        emissiveIntensity={0.5} 
-      />
-    </mesh>
+    <group position={[x, 0, 0]}>
+      <mesh castShadow>
+        {isFileChunk ? (
+          <boxGeometry args={[size, size * 1.4, size * 0.1]} />
+        ) : (
+          <boxGeometry args={[size, size, size]} />
+        )}
+        <meshStandardMaterial 
+          color={packet.color} 
+          emissive={packet.color} 
+          emissiveIntensity={0.5} 
+        />
+      </mesh>
+      {isFileChunk && (
+        <Text 
+          position={[0, 0, size * 0.1]} 
+          fontSize={0.15} 
+          color="white" 
+          anchorX="center" 
+          anchorY="middle"
+        >
+          {packet.fileChunkIndex !== undefined ? `#${packet.fileChunkIndex + 1}` : ""}
+        </Text>
+      )}
+    </group>
   );
 }
 
@@ -118,6 +151,7 @@ export default function NetworkSimulator() {
   });
   const [logs, setLogs] = useState<string[]>([]);
   const [isSimulating, setIsSimulating] = useState(false);
+  const [fileTransfer, setFileTransfer] = useState<FileTransfer | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
   const addLog = useCallback((message: string) => {
@@ -125,7 +159,7 @@ export default function NetworkSimulator() {
     setLogs((prev) => [`[${timestamp}] ${message}`, ...prev].slice(0, 50));
   }, []);
 
-  const createPacket = useCallback((type: PacketType, toServer: boolean): Packet => {
+  const createPacket = useCallback((type: PacketType, toServer: boolean, fileChunkIndex?: number, fileName?: string): Packet => {
     const colors: Record<PacketType, string> = {
       "SYN": "#f59e0b",
       "SYN-ACK": "#8b5cf6",
@@ -133,6 +167,7 @@ export default function NetworkSimulator() {
       "DATA": "#3b82f6",
       "FIN": "#ef4444",
       "UDP-DATA": "#06b6d4",
+      "FILE-CHUNK": "#ec4899",
     };
 
     return {
@@ -141,6 +176,8 @@ export default function NetworkSimulator() {
       progress: 0,
       color: colors[type],
       toServer,
+      fileChunkIndex,
+      fileName,
     };
   }, []);
 
@@ -245,6 +282,77 @@ export default function NetworkSimulator() {
     setIsSimulating(false);
   };
 
+  // Transfer File
+  const transferFile = async () => {
+    if (connectionState !== "ESTABLISHED") {
+      addLog("❌ Error: Connection not established. Perform handshake first.");
+      return;
+    }
+
+    setIsSimulating(true);
+    
+    // Simulate file metadata
+    const fileName = "document.pdf";
+    const fileSize = 2048; // KB
+    const chunkSize = 512; // KB per chunk
+    const totalChunks = Math.ceil(fileSize / chunkSize);
+
+    setFileTransfer({
+      name: fileName,
+      size: fileSize,
+      chunks: totalChunks,
+      currentChunk: 0,
+      progress: 0,
+      status: "transferring",
+    });
+
+    addLog(`📁 FILE: Starting transfer of "${fileName}" (${fileSize}KB)`);
+    addLog(`📦 FILE: Splitting into ${totalChunks} chunks...`);
+
+    // Send each chunk
+    for (let i = 0; i < totalChunks; i++) {
+      // Update file transfer state
+      setFileTransfer((prev) => prev ? {
+        ...prev,
+        currentChunk: i,
+        progress: ((i + 1) / totalChunks) * 100,
+      } : null);
+
+      addLog(`📤 FILE: Sending chunk ${i + 1}/${totalChunks}...`);
+
+      // Send file chunk
+      const chunkPacket = createPacket("FILE-CHUNK", true, i, fileName);
+      await new Promise<void>((resolve) => {
+        animatePacket(chunkPacket, () => {
+          setStats((prev) => ({ ...prev, packetsSent: prev.packetsSent + 1 }));
+          resolve();
+        });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Receive ACK
+      const ackPacket = createPacket("ACK", false);
+      await new Promise<void>((resolve) => {
+        animatePacket(ackPacket, () => {
+          setStats((prev) => ({ ...prev, packetsReceived: prev.packetsReceived + 1 }));
+          resolve();
+        });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      addLog(`✅ FILE: Chunk ${i + 1}/${totalChunks} acknowledged`);
+    }
+
+    setFileTransfer((prev) => prev ? {
+      ...prev,
+      progress: 100,
+      status: "completed",
+    } : null);
+
+    addLog(`🎉 FILE: Transfer complete! "${fileName}" received by server`);
+    setIsSimulating(false);
+  };
+
   // Close TCP Connection
   const closeTCPConnection = async () => {
     if (connectionState !== "ESTABLISHED") {
@@ -277,6 +385,7 @@ export default function NetworkSimulator() {
 
     setConnectionState("CLOSED");
     addLog("✅ TCP: Connection closed");
+    setFileTransfer(null);
     setIsSimulating(false);
   };
 
@@ -330,6 +439,7 @@ export default function NetworkSimulator() {
     });
     setLogs([]);
     setIsSimulating(false);
+    setFileTransfer(null);
     addLog("🔄 Simulator reset");
   }, [addLog]);
 
@@ -355,6 +465,43 @@ export default function NetworkSimulator() {
             {protocol} Protocol
           </Badge>
         </div>
+
+        {/* File Transfer Progress Overlay */}
+        {fileTransfer && (
+          <div className="absolute bottom-4 left-4 right-4 max-w-md mx-auto">
+            <Card className="bg-slate-950/95 backdrop-blur border-pink-500/50">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-pink-500" />
+                  File Transfer
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-400">{fileTransfer.name}</span>
+                    <span className="text-slate-400">{fileTransfer.size}KB</span>
+                  </div>
+                  <Progress value={fileTransfer.progress} className="h-2" />
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-400">
+                      Chunk {fileTransfer.currentChunk + 1} / {fileTransfer.chunks}
+                    </span>
+                    <span className="text-pink-400 font-mono">
+                      {fileTransfer.progress.toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+                {fileTransfer.status === "completed" && (
+                  <Badge variant="default" className="w-full justify-center bg-green-500">
+                    <CheckCircle2 className="w-3 h-3 mr-1" />
+                    Transfer Complete
+                  </Badge>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
 
       {/* Control Panel */}
@@ -405,6 +552,15 @@ export default function NetworkSimulator() {
                   >
                     <Send className="w-4 h-4 mr-2" />
                     Send Data
+                  </Button>
+
+                  <Button 
+                    onClick={transferFile} 
+                    disabled={isSimulating || connectionState !== "ESTABLISHED"}
+                    className="w-full bg-pink-600 hover:bg-pink-700"
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    Transfer File
                   </Button>
 
                   <Button 
