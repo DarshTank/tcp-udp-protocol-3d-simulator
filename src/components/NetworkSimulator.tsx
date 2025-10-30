@@ -1,14 +1,13 @@
 "use client";
 
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, PerspectiveCamera, Text, Sphere, Box } from "@react-three/drei";
-import { useState, useRef, useEffect } from "react";
+import { OrbitControls, PerspectiveCamera, Text } from "@react-three/drei";
+import { useState, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Network, Activity, Send, WifiOff, CheckCircle2, XCircle, Clock } from "lucide-react";
-import * as THREE from "three";
+import { Network, Activity, Send, WifiOff, CheckCircle2, XCircle } from "lucide-react";
 
 // Types
 type Protocol = "TCP" | "UDP";
@@ -18,11 +17,9 @@ type PacketType = "SYN" | "SYN-ACK" | "ACK" | "DATA" | "FIN" | "UDP-DATA";
 interface Packet {
   id: string;
   type: PacketType;
-  position: THREE.Vector3;
-  direction: THREE.Vector3;
   progress: number;
   color: string;
-  protocol: Protocol;
+  toServer: boolean;
 }
 
 interface Stats {
@@ -32,31 +29,21 @@ interface Stats {
   totalTime: number;
 }
 
-// Animated Packet Component
+// Animated Packet Component - simplified without Text labels
 function AnimatedPacket({ packet }: { packet: Packet }) {
-  const startPos = packet.direction.x > 0 ? [-5, 0, 0] as const : [5, 0, 0] as const;
-  const endPos = packet.direction.x > 0 ? [5, 0, 0] as const : [-5, 0, 0] as const;
-  
-  const x = startPos[0] + (endPos[0] - startPos[0]) * packet.progress;
-  const y = startPos[1] + (endPos[1] - startPos[1]) * packet.progress;
-  const z = startPos[2] + (endPos[2] - startPos[2]) * packet.progress;
+  const startX = packet.toServer ? -5 : 5;
+  const endX = packet.toServer ? 5 : -5;
+  const x = startX + (endX - startX) * packet.progress;
 
   return (
-    <group position={[x, y, z]}>
-      <mesh>
-        <boxGeometry args={[0.3, 0.3, 0.3]} />
-        <meshStandardMaterial color={packet.color} emissive={packet.color} emissiveIntensity={0.5} />
-      </mesh>
-      <Text
-        position={[0, 0.5, 0]}
-        fontSize={0.2}
-        color="white"
-        anchorX="center"
-        anchorY="middle"
-      >
-        {packet.type}
-      </Text>
-    </group>
+    <mesh position={[x, 0, 0]} castShadow>
+      <boxGeometry args={[0.3, 0.3, 0.3]} />
+      <meshStandardMaterial 
+        color={packet.color} 
+        emissive={packet.color} 
+        emissiveIntensity={0.5} 
+      />
+    </mesh>
   );
 }
 
@@ -72,28 +59,30 @@ function Scene({ packets, connectionState }: { packets: Packet[]; connectionStat
       <pointLight position={[10, 10, 10]} intensity={1} />
       <pointLight position={[-10, -10, -10]} intensity={0.5} />
       
-      {/* Grid Floor - Using mesh instead of gridHelper */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
+      {/* Grid Floor */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} receiveShadow>
         <planeGeometry args={[20, 20]} />
         <meshBasicMaterial color="#1a1a1a" wireframe />
       </mesh>
       
       {/* Client Node */}
       <group position={[-5, 0, 0]}>
-        <Sphere args={[0.8, 32, 32]}>
+        <mesh castShadow>
+          <sphereGeometry args={[0.8, 32, 32]} />
           <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.3} />
-        </Sphere>
-        <Text position={[0, -1.5, 0]} fontSize={0.4} color="white" anchorX="center">
+        </mesh>
+        <Text position={[0, -1.5, 0]} fontSize={0.4} color="white" anchorX="center" anchorY="middle">
           CLIENT
         </Text>
       </group>
       
       {/* Server Node */}
       <group position={[5, 0, 0]}>
-        <Sphere args={[0.8, 32, 32]}>
+        <mesh castShadow>
+          <sphereGeometry args={[0.8, 32, 32]} />
           <meshStandardMaterial color="#10b981" emissive="#10b981" emissiveIntensity={0.3} />
-        </Sphere>
-        <Text position={[0, -1.5, 0]} fontSize={0.4} color="white" anchorX="center">
+        </mesh>
+        <Text position={[0, -1.5, 0]} fontSize={0.4} color="white" anchorX="center" anchorY="middle">
           SERVER
         </Text>
       </group>
@@ -129,13 +118,14 @@ export default function NetworkSimulator() {
   });
   const [logs, setLogs] = useState<string[]>([]);
   const [isSimulating, setIsSimulating] = useState(false);
+  const animationFrameRef = useRef<number | null>(null);
 
-  const addLog = (message: string) => {
+  const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs((prev) => [`[${timestamp}] ${message}`, ...prev].slice(0, 50));
-  };
+  }, []);
 
-  const createPacket = (type: PacketType, toServer: boolean): Packet => {
+  const createPacket = useCallback((type: PacketType, toServer: boolean): Packet => {
     const colors: Record<PacketType, string> = {
       "SYN": "#f59e0b",
       "SYN-ACK": "#8b5cf6",
@@ -148,17 +138,15 @@ export default function NetworkSimulator() {
     return {
       id: `${Date.now()}-${Math.random()}`,
       type,
-      position: new THREE.Vector3(toServer ? -5 : 5, 0, 0),
-      direction: new THREE.Vector3(toServer ? 1 : -1, 0, 0),
       progress: 0,
       color: colors[type],
-      protocol,
+      toServer,
     };
-  };
+  }, []);
 
-  const animatePacket = (packet: Packet, onComplete: () => void) => {
+  const animatePacket = useCallback((packet: Packet, onComplete: () => void) => {
     const startTime = Date.now();
-    const duration = 1500; // 1.5 seconds
+    const duration = 1500;
 
     const animate = () => {
       const elapsed = Date.now() - startTime;
@@ -169,7 +157,7 @@ export default function NetworkSimulator() {
       );
 
       if (progress < 1) {
-        requestAnimationFrame(animate);
+        animationFrameRef.current = requestAnimationFrame(animate);
       } else {
         setPackets((prev) => prev.filter((p) => p.id !== packet.id));
         onComplete();
@@ -177,8 +165,8 @@ export default function NetworkSimulator() {
     };
 
     setPackets((prev) => [...prev, packet]);
-    animate();
-  };
+    animationFrameRef.current = requestAnimationFrame(animate);
+  }, []);
 
   // TCP 3-Way Handshake
   const performTCPHandshake = async () => {
@@ -326,7 +314,12 @@ export default function NetworkSimulator() {
     setIsSimulating(false);
   };
 
-  const resetSimulator = () => {
+  const resetSimulator = useCallback(() => {
+    // Cancel any ongoing animations
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+    
     setConnectionState("CLOSED");
     setPackets([]);
     setStats({
@@ -338,13 +331,20 @@ export default function NetworkSimulator() {
     setLogs([]);
     setIsSimulating(false);
     addLog("🔄 Simulator reset");
-  };
+  }, [addLog]);
 
   return (
     <div className="w-full h-screen flex">
       {/* 3D Canvas */}
       <div className="flex-1 relative">
-        <Canvas>
+        <Canvas 
+          shadows 
+          gl={{ 
+            preserveDrawingBuffer: true,
+            antialias: true,
+          }}
+          dpr={[1, 2]}
+        >
           <Scene packets={packets} connectionState={connectionState} />
         </Canvas>
         
